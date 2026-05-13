@@ -20,9 +20,10 @@ jobs:
     timeout-minutes: 30
 
     env:
-      LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-2.5-pro' }}
+      LLM_MODEL: ${{ vars.LLM_MODEL || 'openai/deepseek-v4-flash' }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.deepseek.com' }}
+      LLM_CACHING_PROMPT: ${{ vars.LLM_CACHING_PROMPT || 'false' }}
       GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       ISSUE_TITLE: ${{ github.event.issue.title }}
@@ -45,6 +46,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install uv
+
+      - name: Print runtime versions
+        run: |
+          python --version
+          uv --version
+          uvx --python 3.12 --from openhands openhands --version
 
       - name: Prepare issue task
         uses: actions/github-script@v7
@@ -86,25 +93,53 @@ jobs:
 
       - name: Run OpenHands headless
         run: |
+          set -euo pipefail
           uvx --python 3.12 --from openhands openhands \
             --override-with-envs \
             --headless \
             --json \
             -f /tmp/openhands-task.md \
-            > /tmp/openhands-output.jsonl
+            > /tmp/openhands-output.jsonl \
+            2> /tmp/openhands-stderr.log
 
       - name: Upload OpenHands output
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: openhands-output
-          path: /tmp/openhands-output.jsonl
+          name: openhands-output-issue-${{ env.ISSUE_NUMBER }}
+          path: |
+            /tmp/openhands-output.jsonl
+            /tmp/openhands-stderr.log
           if-no-files-found: ignore
+
+      - name: Classify OpenHands result
+        id: classify_result
+        if: always()
+        run: |
+          set -euo pipefail
+
+          if [ -s /tmp/openhands-stderr.log ] && grep -Eq 'RateLimitError|RESOURCE_EXHAUSTED|429' /tmp/openhands-stderr.log; then
+            echo "reason=llm_rate_limited" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -s /tmp/openhands-stderr.log ] && grep -Eq 'INVALID_ARGUMENT|AUTH|API[_ ]KEY|permission|quota' /tmp/openhands-stderr.log; then
+            echo "reason=llm_config_error" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "reason=no_changes" >> "$GITHUB_OUTPUT"
+          else
+            echo "reason=changes_created" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create pull request
         id: create_pr
         run: |
-          if git diff --quiet; then
+          set -euo pipefail
+
+          if [ "${{ steps.classify_result.outputs.reason }}" != "changes_created" ]; then
             echo "No changes produced by OpenHands."
             echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -113,17 +148,24 @@ jobs:
           branch="openhands/issue-${ISSUE_NUMBER}"
           git config user.name "${{ secrets.PAT_USERNAME || github.actor }}"
           git config user.email "${{ secrets.PAT_USERNAME || github.actor }}@users.noreply.github.com"
-          git checkout -b "$branch"
+          git checkout -B "$branch"
           git add -A
           git commit -m "fix: resolve issue #${ISSUE_NUMBER} with OpenHands"
           git push --force-with-lease origin "$branch"
 
-          pr_url="$(gh pr create \
-            --base "$TARGET_BRANCH" \
+          pr_url="$(gh pr list \
             --head "$branch" \
-            --title "fix: ${ISSUE_TITLE}" \
-            --body "Automated OpenHands attempt for #${ISSUE_NUMBER}." \
-            --draft)"
+            --base "$TARGET_BRANCH" \
+            --json url \
+            --jq '.[0].url')"
+          if [ -z "$pr_url" ]; then
+            pr_url="$(gh pr create \
+              --base "$TARGET_BRANCH" \
+              --head "$branch" \
+              --title "fix: ${ISSUE_TITLE}" \
+              --body "Automated OpenHands attempt for #${ISSUE_NUMBER}." \
+              --draft)"
+          fi
           echo "created=true" >> "$GITHUB_OUTPUT"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
@@ -135,9 +177,15 @@ jobs:
           script: |
             const created = '${{ steps.create_pr.outputs.created }}' === 'true';
             const prUrl = '${{ steps.create_pr.outputs.pr_url }}';
-            const body = created
-              ? `OpenHands created a draft PR: ${prUrl}`
-              : `OpenHands finished, but no repository changes were produced. Check the workflow logs and artifact for details.`;
+            const reason = '${{ steps.classify_result.outputs.reason }}';
+            let body = `OpenHands finished, but no repository changes were produced. Check the workflow logs and artifact for details.`;
+            if (created) {
+              body = `OpenHands created a draft PR: ${prUrl}`;
+            } else if (reason === 'llm_rate_limited') {
+              body = `OpenHands did not complete because the LLM request was rate limited. Check the workflow logs and uploaded stderr artifact for the provider error.`;
+            } else if (reason === 'llm_config_error') {
+              body = `OpenHands did not complete because of an LLM configuration or credential error. Check the workflow logs and uploaded stderr artifact for details.`;
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
