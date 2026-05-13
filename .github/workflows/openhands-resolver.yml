@@ -36,7 +36,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install OpenHands
         run: |
@@ -82,21 +82,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Create draft PR or branch
-        if: always()
+        if: always() && steps.check_result.outputs.success == 'true'
         run: |
           cd /tmp
-          if [ "${{ steps.check_result.outputs.success }}" = "true" ]; then
-            python -m openhands_resolver.send_pull_request \
-              --issue-number "$ISSUE_NUMBER" \
-              --github-username "$GITHUB_USERNAME" \
-              --pr-type draft
-          else
-            python -m openhands_resolver.send_pull_request \
-              --issue-number "$ISSUE_NUMBER" \
-              --github-username "$GITHUB_USERNAME" \
-              --pr-type branch \
-              --send-on-failure
-          fi
+          python -m openhands_resolver.send_pull_request \
+            --issue-number "$ISSUE_NUMBER" \
+            --github-username "$GITHUB_USERNAME" \
+            --pr-type draft
 
       - name: Remove fix-me label
         if: always()
