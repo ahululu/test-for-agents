@@ -22,6 +22,7 @@ jobs:
     env:
       LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-2.5-pro' }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.deepseek.com' }}
       GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       ISSUE_TITLE: ${{ github.event.issue.title }}
