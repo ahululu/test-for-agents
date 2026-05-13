@@ -85,7 +85,7 @@ jobs:
 
       - name: Run OpenHands headless
         run: |
-          uvx --python 3.12 --from openhands-ai openhands \
+          uvx --python 3.12 --from openhands openhands \
             --override-with-envs \
             --headless \
             --json \
