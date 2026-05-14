@@ -28,7 +28,7 @@ jobs:
               },
               body: JSON.stringify({
                 query: `
-                  query($teamId: ID!) {
+                  query($teamId: String!) {
                     team(id: $teamId) {
                       issues(
                         filter: { createdAt: { gt: "${TEN_MINUTES_AGO}" } }
