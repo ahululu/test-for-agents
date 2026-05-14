@@ -1,0 +1,114 @@
+name: Sync Linear Issues to GitHub
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync Linear Issues to GitHub
+        uses: actions/github-script@v7
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const TEN_MINUTES_AGO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+            // 查询 Linear 最近10分钟新建的 issue
+            const linearRes = await fetch('https://api.linear.app/graphql', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': process.env.LINEAR_API_KEY,
+              },
+              body: JSON.stringify({
+                query: `
+                  query($teamId: ID!) {
+                    team(id: $teamId) {
+                      issues(
+                        filter: { createdAt: { gt: "${TEN_MINUTES_AGO}" } }
+                        first: 50
+                        orderBy: createdAt
+                      ) {
+                        nodes {
+                          id
+                          identifier
+                          title
+                          description
+                          url
+                          state { name }
+                          assignee { name }
+                          labels { nodes { name } }
+                        }
+                      }
+                    }
+                  }
+                `,
+                variables: { teamId: process.env.LINEAR_TEAM_ID },
+              }),
+            });
+
+            const linearData = await linearRes.json();
+
+            if (linearData.errors) {
+              core.setFailed(`Linear API error: ${JSON.stringify(linearData.errors)}`);
+              return;
+            }
+
+            const issues = linearData.data.team.issues.nodes;
+            console.log(`Found ${issues.length} new Linear issue(s)`);
+
+            for (const issue of issues) {
+              // 用 linear-id 检查是否已同步，避免重复创建
+              const searchRes = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} "linear-id:${issue.id}" in:body is:issue`,
+              });
+
+              if (searchRes.data.total_count > 0) {
+                console.log(`Already synced: ${issue.identifier}`);
+                continue;
+              }
+
+              const labels = issue.labels.nodes.map(l => l.name);
+              const body = [
+                issue.description || '',
+                '',
+                '---',
+                `> Synced from Linear: [${issue.identifier}](${issue.url})`,
+                `> Status: ${issue.state.name}`,
+                issue.assignee ? `> Assignee: ${issue.assignee.name}` : '',
+                `<!-- linear-id:${issue.id} -->`,
+              ].filter(line => line !== undefined).join('\n');
+
+              // 确保 linear-synced label 存在
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'linear-synced',
+                });
+              } catch {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'linear-synced',
+                  color: '5E6AD2',
+                  description: 'Synced from Linear',
+                });
+              }
+
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[${issue.identifier}] ${issue.title}`,
+                body,
+                labels: ['linear-synced', ...labels],
+              });
+
+              console.log(`Created GitHub issue for ${issue.identifier}: ${issue.title}`);
+            }
