@@ -1,0 +1,36 @@
+name: Qodo PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr_agent_job:
+    if: ${{ github.event.sender.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    name: Run Qodo PR-Agent
+    steps:
+      - name: PR Agent action
+        uses: qodo-ai/pr-agent@main
+        env:
+          # 复用现有 LLM_API_KEY（指向 DeepSeek），不需要额外申请 OpenAI/Anthropic
+          OPENAI__KEY: ${{ secrets.LLM_API_KEY }}
+          OPENAI__API_BASE: "https://api.deepseek.com/v1"
+          CONFIG__MODEL: "deepseek-chat"
+          CONFIG__FALLBACK_MODELS: '["deepseek-chat"]'
+
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # 行为开关
+          github_action_config.auto_review: "true"      # PR 一开自动 review
+          github_action_config.auto_describe: "true"    # 自动生成 PR 描述
+          github_action_config.auto_improve: "false"    # 改进建议按需手动 /improve
+
+          # 评论里支持 /review /describe /improve /ask <问题> 等命令
