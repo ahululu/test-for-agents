@@ -25,6 +25,9 @@ jobs:
           OPENAI__API_BASE: "https://api.deepseek.com/v1"
           CONFIG__MODEL: "deepseek-chat"
           CONFIG__FALLBACK_MODELS: '["deepseek-chat"]'
+          # pr-agent 内置 MAX_TOKENS 字典未收 deepseek-chat，必须显式告诉它窗口大小
+          # DeepSeek V3.5 context = 64k；留点余量给输出
+          CONFIG__CUSTOM_MODEL_MAX_TOKENS: "32000"
 
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
